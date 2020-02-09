@@ -1,3 +1,4 @@
+#include "config.h"
 // BUSY -> 4, RST -> 16, DC -> 17, CS -> SS(5), CLK -> SCK(18), DIN -> MOSI(23), GND -> GND, 3.3V -> 19 (3.3V)
 #include <GxEPD.h>
 #include <GxGDEW042T2/GxGDEW042T2.h>      // 4.2" b/w
@@ -11,8 +12,6 @@ const GFXfont* f24 = &FreeMonoBold24pt7b;
 const GFXfont* f12 = &FreeMonoBold12pt7b;
 GxIO_Class io(SPI, /*CS=5*/ SS, /*DC=*/ 17, /*RST=*/ 16); // arbitrary selection of 17, 16
 GxEPD_Class display(io, /*RST=*/ 16, /*BUSY=*/ 4); // arbitrary selection of (16), 4
-
-#include "config.h"
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 AsyncWebServer asyncServer(80);
@@ -44,8 +43,9 @@ void setup()
 {
   Serial.begin(115200);
   display.init(115200);
+  //display.powerDown();
   
-  pinMode (19, OUTPUT); // 3.3v for e-paper-display
+  pinMode (19, OUTPUT); // 3.3v for e-paper
   digitalWrite (19, 1);
   epaper_init();
 
@@ -54,14 +54,14 @@ void setup()
   
   ++bootCount;
   //Serial.println("Boot number: " + String(bootCount));
-  display.print("Boot #" + String(bootCount));
   switch(esp_sleep_get_wakeup_cause())
   {
-    case 4 : display.println(" (timer)"); idle_counter=5; break;
-    case 5 : display.println(" (touch)"); idle_counter=0; break;
-    default : display.println(); break;
+    case 4 : epaper_print_status1("Boot #" + String(bootCount)+" (timer)"); idle_counter=MAX_IDLE_10_SECS-1; break; /* just 10 seconds till next sleep if timer caused wake-up */
+    case 5 : epaper_print_status1("Boot #" + String(bootCount)+" (touch)"); idle_counter=MAX_IDLE_10_SECS-1; break; /* just 10 seconds till next sleep if timer caused wake-up */
+    default : epaper_print_status1("Boot #" + String(bootCount)+" (start)"); break;
   }
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000ULL);  
+  //esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000ULL);  
+  epaper_message();
 
   loadPreferences();
   WiFi.onEvent(WiFiEvent);
@@ -81,17 +81,15 @@ void setup()
   });
   asyncServer.on("/ON", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
-    //display.setBrightness(0x03, true);
-    epaper_init(); display.update();
+    epaper_init();
   });
   asyncServer.on("/OFF", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
-    //display.setBrightness(0x00, false);
-    epaper_init(); display.update();
+    epaper_init();
   }); 
   asyncServer.on("/ART", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
-    art();
+    epaper_message();
   }); 
   asyncServer.on("/TIME", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
@@ -136,7 +134,7 @@ void setup()
 
 
 void loop(){
-  if (deepsleep) {WiFi.disconnect(); delay(1000); goToDeepSleep();}
+  if (deepsleep) {WiFi.disconnect(); esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000ULL); delay(1000); goToDeepSleep();}
   if (restart) {WiFi.disconnect(); delay(1000); ESP.restart();}
   
   if (abs(millis()-timeflag)>10000) {
@@ -151,7 +149,7 @@ void loop(){
       else {
         sIOclient.heartbeat(1); 
         if (ten_seconds_heartbeat_counter>=6) {
-		  /* this is starting every minute */
+		      /* this is starting every minute */
           //sIOclient.send("broadcast","get","time");
           ten_seconds_heartbeat_counter=0;
         }
@@ -170,9 +168,9 @@ void loop(){
     //Serial.print(RID+", ");
     //Serial.print(Rname+", ");
     //Serial.println(Rcontent);
-    if (Rname=="time") {epaper_update_time(Rcontent);} //{art_z=0; display.showNumberDecEx(Rcontent.toInt(), 0b01000000, true, 4, 0);}
-    if (Rname=="number") {epaper_println(Rcontent);} //{art_z=0; display.showNumberDecEx(Rcontent.toInt(), 0b00000000, true, 4, 0);}
-    if (Rname=="welcomemessage") {epaper_println(Rcontent); sIOclient.send("broadcast","get","time");} //Rcontent {art_z=0; art(12,440);}
+    if (Rname=="time") {epaper_print(Rcontent);}
+    if (Rname=="number") {epaper_print(Rcontent);}
+    if (Rname=="welcomemessage") {epaper_print(Rcontent); sIOclient.send("broadcast","get","time");}
     if (Rname=="") {connectSocketIO();}
     Rname="";
   }
@@ -217,9 +215,7 @@ bool setupAP() {
   //Serial.println(AP_SSID);
   //Serial.print("Soft-AP IP = ");
   //Serial.println(WiFi.softAPIP());
-  //display.showNumberDecEx(8888, 0b00000000, false, 4, 0);
-  display.print("8.8.8.8 @ "); display.println(AP_SSID);
-  display.update();
+  epaper_print_status2("8.8.8.8 @ " + String(AP_SSID));
 }
 
 bool connectWiFi() {
@@ -230,20 +226,17 @@ bool connectWiFi() {
   while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500); Serial.print("~");}
   if (WiFi.status()==WL_CONNECTED) {
     WiFi.mode(WIFI_MODE_APSTA);
-    display.print(WiFi.localIP().toString()); display.print(" @ "); display.println(wifiSSID);
-    display.update();
+    epaper_print_status2(WiFi.localIP().toString() + " @ " + wifiSSID);
     //Serial.print("WiFi connected. IP address: ");
     //Serial.println(WiFi.localIP());
     //String ip=WiFi.localIP().toString(); ip=ip.substring(ip.lastIndexOf('.')+1,ip.length());
-    //display.showNumberDecEx(ip.toInt(), 0b00000000, false, 4, 0);
     connectSocketIO();
     blink(1,800);
     return true;  
   } else {
     WiFi.mode(WIFI_MODE_AP);
     blink(2,150);
-    display.println(wifiSSID + " connect failed");
-    display.update();
+    epaper_print(wifiSSID + " connect failed");
     //Serial.print("Failed to connect WiFi. ");
     if (rebootOnNoWiFi) {
       //Serial.print("Will restart in 15 seconds..."); 
@@ -261,8 +254,7 @@ void connectSocketIO() {
   if (sIOclient.connected()) {
     //Serial.println("Connected to SocketIO-server "+String(SOCKETIOHOST));
     sIOshouldBeConnected=true;
-    display.println(String(sIOclient.sid));
-    display.update();
+    epaper_print(String(sIOclient.sid));
   } 
 }
 
@@ -307,10 +299,6 @@ String assembleRES() {
   +"</body></html>";
 }
 
-void art() {
-  epaper_history();
-}
-
 void blink(int z, int d) {
   for (int i=0; i < z; i++){
     digitalWrite(2, !digitalRead(2));
@@ -321,8 +309,7 @@ void blink(int z, int d) {
 }
 
 void goToDeepSleep() {
-  display.println("SLEEPING > touch PIN");
-  display.update();
+  epaper_print_status2("SLEEPING " + String(TIME_TO_SLEEP) + " > touch PIN");
   //#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex
   //DEEP SLEEP while PIN 33 is connected to GND //or while touchsensor on PIN15 isn't touched
   ////DEEP SLEEP while PIN 33 is connected to GND
@@ -334,7 +321,7 @@ void goToDeepSleep() {
   esp_sleep_enable_touchpad_wakeup();
   digitalWrite(2, true); 
   //Serial.println("Going to sleep now");
-  delay(5000);
+  delay(2000);
   esp_deep_sleep_start();
 }
 
@@ -394,45 +381,24 @@ void WiFiEvent(WiFiEvent_t event)
     case SYSTEM_EVENT_STA_DISCONNECTED:
       wifi_connected = false;
       //Serial.println("WiFi disconnected");
-      delay(10000);
-      connectWiFi();
+      //delay(10000);
+      //connectWiFi();
       break;
     default:
       break;
   }
 }
 
-void epaper_history()
+void epaper_message()
 {
-  display.fillScreen(GxEPD_WHITE);
-/*
-  display.setFont(f24);
-  display.setTextColor(GxEPD_BLACK);
-
-  display.setCursor(100,120);
-  display.print("ERSTER!");
-
-  display.update();
-  delay(300);
-*/
-  //uint8_t r = display.getRotation();
-  //display.setRotation(r);
-  //display.fillRect(display.width() - 18, 0, 16, 16, GxEPD_BLACK);
-  //display.fillRect(display.width() - 25, display.height() - 25, 24, 24, GxEPD_BLACK);
-  display.fillRect(0, 60, display.width(), 100, GxEPD_BLACK);
-
+  //display.fillScreen(GxEPD_WHITE);
+  display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
+  display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_BLACK);
   display.setFont(f24);
   display.setTextColor(GxEPD_WHITE);
-  display.setCursor(35,120);
+  display.setCursor(35,60);
   display.print("Hello World!");
-
-  display.setFont(f12);
-  display.setTextColor(GxEPD_BLACK);
-  display.setCursor(45,200);
-  display.println("So faengt es immer an."); display.println();
-
-  display.update();
-  //delay(3000);
+  display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 }
 
 void epaper_init()
@@ -441,17 +407,29 @@ void epaper_init()
   display.setFont(f12);
   display.setTextColor(GxEPD_BLACK);
   display.setCursor(0,20);
-}
-
-void epaper_update_time(const String& text)
-{
-  display.println(text);
   display.update();
 }
 
-void epaper_println(const String& text)
+void epaper_print(const String& text) {epaper_update(0, 105, GxEPD_WIDTH, 30, text, false);}
+void epaper_print_status1(const String& text) {epaper_update(0, GxEPD_HEIGHT-60, GxEPD_WIDTH, 30, text, false);}
+void epaper_print_status2(const String& text) {epaper_update(0, GxEPD_HEIGHT-30, GxEPD_WIDTH, 30, text, false);}
+
+void epaper_update(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const String& text, bool invert)
 {
+  display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
+
+  display.fillRect(x, y, w, h, GxEPD_BLACK);
+  display.updateWindow(x, y, w, h, true);
+
+  display.fillRect(x, y, w, h, GxEPD_WHITE);
+  display.updateWindow(x, y, w, h, true);
+
+  display.fillRect(x, y, w, h, GxEPD_WHITE);
+  display.setCursor(x,y+22);
+  display.setFont(f12);
+  display.setTextColor(GxEPD_BLACK);
   display.println(text);
-  display.update();
+  display.updateWindow(x, y, w, h, true);
 }
+
 
