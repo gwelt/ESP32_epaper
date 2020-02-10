@@ -23,6 +23,7 @@ bool rebootOnNoWiFi; // Should it reboot if no WiFi could be connected?
 
 #include <SocketIOClient.h>
 SocketIOClient sIOclient;
+extern String R;
 extern String RID;
 extern String Rname;
 extern String Rcontent;
@@ -90,7 +91,8 @@ void setup()
   }); 
   asyncServer.on("/TIME", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
-    sIOclient.send("broadcast","get","time");
+    //sIOclient.send("broadcast","get","time");
+    sIOclient.send("message","time");
   });
   asyncServer.on("/SCANNETWORKS", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
@@ -142,14 +144,12 @@ void loop(){
         sIOclient.heartbeat(1); 
         if (ten_seconds_heartbeat_counter>=6) {
 		      /* this is starting every minute */
-          //sIOclient.send("broadcast","get","time");
           ten_seconds_heartbeat_counter=0;
         }
         ten_seconds_heartbeat_counter++;
       }
     }
     if (wifi_connected && !sIOshouldBeConnected) {
-      //blink(5,50); 
       connectSocketIO();
     }
   }
@@ -157,11 +157,16 @@ void loop(){
   if (sIOshouldBeConnected && sIOclient.monitor())
   {
     blink(1,50);
+    idle_counter=0;
+    epaper_print(R.substring(R.indexOf("\",") + 3, R.indexOf("\"\]")));
+    //sIOclient.send("message","time");
+    /*
     if (Rname=="time") {epaper_print(Rcontent);}
     if (Rname=="number") {epaper_print(Rcontent);}
     if (Rname=="welcomemessage") {epaper_print(Rcontent); sIOclient.send("broadcast","get","time");}
     if (Rname=="") {connectSocketIO();}
     Rname="";
+    */
   }
 }
 
@@ -228,7 +233,9 @@ void connectSocketIO() {
   } 
   if (sIOclient.connected()) {
     sIOshouldBeConnected=true;
-    epaper_print(String(sIOclient.sid));
+    //epaper_print("HELLO " + String(sIOclient.sid));
+    //sIOclient.send("message","/nick ESP32");
+    sIOclient.send("message","/repeat");
   } 
 }
 
@@ -345,7 +352,7 @@ void epaper_message()
   display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 }
 
-void epaper_print(const String& text) {epaper_update(0, 105, GxEPD_WIDTH, 30, text, false);}
+void epaper_print(const String& text) {epaper_update(0, 105, GxEPD_WIDTH, 120, text, false);}
 void epaper_print_status1(const String& text) {epaper_update(0, GxEPD_HEIGHT-60, GxEPD_WIDTH, 30, text, false);}
 void epaper_print_status2(const String& text) {epaper_update(0, GxEPD_HEIGHT-30, GxEPD_WIDTH, 30, text, false);}
 
