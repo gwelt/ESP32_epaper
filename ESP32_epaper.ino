@@ -1,15 +1,15 @@
 #include "config.h"
 // BUSY -> 4, RST -> 16, DC -> 17, CS -> SS(5), CLK -> SCK(18), DIN -> MOSI(23), GND -> GND, 3.3V -> 19 (3.3V)
 #include <GxEPD.h>
-#include <GxGDEW042T2/GxGDEW042T2.h>      // 4.2" b/w
+#include <GxGDEW042T2/GxGDEW042T2.h> // 4.2" b/w
 #include <GxIO/GxIO_SPI/GxIO_SPI.h>
 #include <GxIO/GxIO.h>
-//#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
-//#include <Fonts/FreeMonoBold18pt7b.h>
 #include <Fonts/FreeMonoBold24pt7b.h>
-const GFXfont* f24 = &FreeMonoBold24pt7b;
+const GFXfont* f9 = &FreeMonoBold9pt7b;
 const GFXfont* f12 = &FreeMonoBold12pt7b;
+const GFXfont* f24 = &FreeMonoBold24pt7b;
 GxIO_Class io(SPI, /*CS=5*/ SS, /*DC=*/ 17, /*RST=*/ 16); // arbitrary selection of 17, 16
 GxEPD_Class display(io, /*RST=*/ 16, /*BUSY=*/ 4); // arbitrary selection of (16), 4
 #include <WiFi.h>
@@ -43,7 +43,6 @@ void setup()
 {
   Serial.begin(115200);
   display.init(115200);
-  //display.powerDown();
   
   pinMode (19, OUTPUT); // 3.3v for e-paper
   digitalWrite (19, 1);
@@ -53,20 +52,18 @@ void setup()
   blink(2,50);
   
   ++bootCount;
-  //Serial.println("Boot number: " + String(bootCount));
   switch(esp_sleep_get_wakeup_cause())
   {
     case 4 : epaper_print_status1("Boot #" + String(bootCount)+" (timer)"); idle_counter=MAX_IDLE_10_SECS-1; break; /* just 10 seconds till next sleep if timer caused wake-up */
-    case 5 : epaper_print_status1("Boot #" + String(bootCount)+" (touch)"); idle_counter=MAX_IDLE_10_SECS-1; break; /* just 10 seconds till next sleep if timer caused wake-up */
+    case 5 : epaper_print_status1("Boot #" + String(bootCount)+" (touch)"); break;
     default : epaper_print_status1("Boot #" + String(bootCount)+" (start)"); break;
   }
-  //esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000ULL);  
+
   epaper_message();
 
   loadPreferences();
   WiFi.onEvent(WiFiEvent);
-  WiFi.mode(WIFI_MODE_AP);
-  setupAP();
+  connectWiFi();
 
   asyncServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
@@ -100,7 +97,6 @@ void setup()
     doScanNetworks();
   });
   asyncServer.on("/CONNECTWIFI", HTTP_GET, [](AsyncWebServerRequest *request){
-    //connectWiFi();
     request->send(200, "text/html", assembleRES());
     restart=true;
   });
@@ -111,7 +107,6 @@ void setup()
   asyncServer.on("/CONNECTSOCKET", HTTP_GET, [](AsyncWebServerRequest *request){
     connectSocketIO();
     request->send(200, "text/html", assembleRES());
-    //restart=true;
   });
   asyncServer.on("/SLEEP", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", assembleRES());
@@ -128,8 +123,6 @@ void setup()
   }); 
 
   asyncServer.begin();
-
-  connectWiFi();
 }
 
 
@@ -139,7 +132,6 @@ void loop(){
   
   if (abs(millis()-timeflag)>10000) {
   	/* this is starting every 10 seconds */
-    //Serial.print('.');
     timeflag = millis();
     
     if (idle_counter++>=MAX_IDLE_10_SECS) {deepsleep=true;} // go to sleep after MAX_IDLE_10_SECS*10 seconds idle-time
@@ -157,7 +149,7 @@ void loop(){
       }
     }
     if (wifi_connected && !sIOshouldBeConnected) {
-      blink(5,50); 
+      //blink(5,50); 
       connectSocketIO();
     }
   }
@@ -165,9 +157,6 @@ void loop(){
   if (sIOshouldBeConnected && sIOclient.monitor())
   {
     blink(1,50);
-    //Serial.print(RID+", ");
-    //Serial.print(Rname+", ");
-    //Serial.println(Rcontent);
     if (Rname=="time") {epaper_print(Rcontent);}
     if (Rname=="number") {epaper_print(Rcontent);}
     if (Rname=="welcomemessage") {epaper_print(Rcontent); sIOclient.send("broadcast","get","time");}
@@ -198,48 +187,34 @@ bool loadPreferences() {
   wifiPassword =  preferences.getString("password", "none");
   rebootOnNoWiFi =  preferences.getBool("rebootOnNoWiFi", false);
   preferences.end();
-  //Serial.print("Stored SSID: ");
-  //Serial.println(wifiSSID);
-  //Serial.print("rebootOnNoWiFi: ");
-  //Serial.println(String(rebootOnNoWiFi));
 }
 
 bool setupAP() {
+  WiFi.mode(WIFI_MODE_AP);
   IPAddress AP_local_IP(8,8,8,8);
   IPAddress AP_gateway(8,8,8,8);
   IPAddress AP_subnet(255,255,255,0);
   WiFi.softAPConfig(AP_local_IP, AP_gateway, AP_subnet);
   delay(100);
   WiFi.softAP(AP_SSID);
-  //Serial.print("Soft-AP SSID = ");
-  //Serial.println(AP_SSID);
-  //Serial.print("Soft-AP IP = ");
-  //Serial.println(WiFi.softAPIP());
   epaper_print_status2("8.8.8.8 @ " + String(AP_SSID));
 }
 
 bool connectWiFi() {
-  WiFi.mode(WIFI_MODE_APSTA);
+  //epaper_print_status2("connecting " + String(wifiSSID));
+  WiFi.mode(WIFI_MODE_STA);
   WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());  
-  //Serial.println("Trying to connect to WiFi "+wifiSSID+".");
   int wait=10;
   while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500); Serial.print("~");}
   if (WiFi.status()==WL_CONNECTED) {
-    WiFi.mode(WIFI_MODE_APSTA);
     epaper_print_status2(WiFi.localIP().toString() + " @ " + wifiSSID);
-    //Serial.print("WiFi connected. IP address: ");
-    //Serial.println(WiFi.localIP());
-    //String ip=WiFi.localIP().toString(); ip=ip.substring(ip.lastIndexOf('.')+1,ip.length());
     connectSocketIO();
-    blink(1,800);
     return true;  
   } else {
-    WiFi.mode(WIFI_MODE_AP);
-    blink(2,150);
-    epaper_print(wifiSSID + " connect failed");
-    //Serial.print("Failed to connect WiFi. ");
+    epaper_print_status2(wifiSSID + " connect failed");
+    setupAP();
     if (rebootOnNoWiFi) {
-      //Serial.print("Will restart in 15 seconds..."); 
+      epaper_print("restarting in 15 seconds...");
       delay(15000); ESP.restart();
     }
     return false;
@@ -249,25 +224,24 @@ bool connectWiFi() {
 void connectSocketIO() {
   if (sIOshouldBeConnected) {sIOclient.disconnect();} 
   if (!sIOclient.connect(SOCKETIOHOST, SOCKETIOPORT)) {
-    //Serial.println("Failed to connect to SocketIO-server "+String(SOCKETIOHOST));
+    epaper_print(String(SOCKETIOHOST) + " socket failed");
   } 
   if (sIOclient.connected()) {
-    //Serial.println("Connected to SocketIO-server "+String(SOCKETIOHOST));
     sIOshouldBeConnected=true;
     epaper_print(String(sIOclient.sid));
   } 
 }
 
 void doScanNetworks() {
-  //Serial.println("Scan start ... ");
   int n = WiFi.scanNetworks();
-  //Serial.print(n);
+  display.fillScreen(GxEPD_WHITE);
+  display.setFont(f12);
+  display.setTextColor(GxEPD_BLACK);
+  display.setCursor(0,20);
   display.print(n);
-  //Serial.println(" network(s) found");
   display.println(" network(s) found");
   int i=0;
   while (i<n) {
-    //Serial.println(WiFi.SSID(i));
     display.println(WiFi.SSID(i));
     i++;
   }
@@ -277,7 +251,6 @@ void doScanNetworks() {
 String assembleRES() {
   idle_counter=0;
   ++counter;
-  //art(12,40);
   blink(1,50);
   String sid="not connected";
   if (sIOshouldBeConnected) {sid=sIOclient.sid;}
@@ -310,6 +283,7 @@ void blink(int z, int d) {
 
 void goToDeepSleep() {
   epaper_print_status2("SLEEPING " + String(TIME_TO_SLEEP) + " > touch PIN");
+  display.update();
   //#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex
   //DEEP SLEEP while PIN 33 is connected to GND //or while touchsensor on PIN15 isn't touched
   ////DEEP SLEEP while PIN 33 is connected to GND
@@ -320,40 +294,8 @@ void goToDeepSleep() {
   touchAttachInterrupt(T3, {}, 60); // T3=PIN15, Threshold=40
   esp_sleep_enable_touchpad_wakeup();
   digitalWrite(2, true); 
-  //Serial.println("Going to sleep now");
-  delay(2000);
+  delay(1000);
   esp_deep_sleep_start();
-}
-
-String urlDecode(const String& text)
-{
-  String decoded = "";
-  char temp[] = "0x00";
-  unsigned int len = text.length();
-  unsigned int i = 0;
-  while (i < len)
-  {
-    char decodedChar;
-    char encodedChar = text.charAt(i++);
-    if ((encodedChar == '%') && (i + 1 < len))
-    {
-      temp[2] = text.charAt(i++);
-      temp[3] = text.charAt(i++);
-
-      decodedChar = strtol(temp, NULL, 16);
-    }
-    else {
-      if (encodedChar == '+')
-      {
-        decodedChar = ' ';
-      }
-      else {
-        decodedChar = encodedChar;  // normal ascii char
-      }
-    }
-    decoded += decodedChar;
-  }
-  return decoded;
 }
 
 void WiFiEvent(WiFiEvent_t event)
@@ -371,34 +313,16 @@ void WiFiEvent(WiFiEvent_t event)
       break;
     case SYSTEM_EVENT_STA_GOT_IP:
       wifi_connected = true;
-      WiFi.mode(WIFI_MODE_APSTA);
-      //Serial.println("STA Connected");
-      //Serial.print("STA SSID: ");
-      //Serial.println(WiFi.SSID());
-      //Serial.print("STA IPv4: ");
-      //Serial.println(WiFi.localIP());
+      //WiFi.mode(WIFI_MODE_APSTA);
       break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
       wifi_connected = false;
-      //Serial.println("WiFi disconnected");
       //delay(10000);
       //connectWiFi();
       break;
     default:
       break;
   }
-}
-
-void epaper_message()
-{
-  //display.fillScreen(GxEPD_WHITE);
-  display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
-  display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_BLACK);
-  display.setFont(f24);
-  display.setTextColor(GxEPD_WHITE);
-  display.setCursor(35,60);
-  display.print("Hello World!");
-  display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 }
 
 void epaper_init()
@@ -408,6 +332,17 @@ void epaper_init()
   display.setTextColor(GxEPD_BLACK);
   display.setCursor(0,20);
   display.update();
+}
+
+void epaper_message()
+{
+  display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
+  display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_BLACK);
+  display.setFont(f24);
+  display.setTextColor(GxEPD_WHITE);
+  display.setCursor(30,60);
+  display.print("Hello World!");
+  display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 }
 
 void epaper_print(const String& text) {epaper_update(0, 105, GxEPD_WIDTH, 30, text, false);}
