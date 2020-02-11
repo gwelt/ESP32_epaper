@@ -42,16 +42,16 @@ int idle_counter=0;
 
 void setup()
 {
+  pinMode(2, OUTPUT);
+  blink(1,1000);
+
   Serial.begin(115200);
   display.init(115200);
-  
+
   pinMode (19, OUTPUT); // 3.3v for e-paper
   digitalWrite (19, 1);
   epaper_init();
 
-  pinMode(2, OUTPUT);
-  blink(2,50);
-  
   ++bootCount;
   switch(esp_sleep_get_wakeup_cause())
   {
@@ -59,11 +59,9 @@ void setup()
     case 5 : epaper_print_status1("Boot #" + String(bootCount)+" (touch)"); break;
     default : epaper_print_status1("Boot #" + String(bootCount)+" (start)"); break;
   }
-
   epaper_message();
 
   loadPreferences();
-  WiFi.onEvent(WiFiEvent);
   connectWiFi();
 
   asyncServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -207,15 +205,18 @@ bool setupAP() {
 
 bool connectWiFi() {
   //epaper_print_status2("connecting " + String(wifiSSID));
-  WiFi.mode(WIFI_MODE_STA);
+  WiFi.onEvent(WiFiEvent);
+  WiFi.mode(WIFI_MODE_APSTA);
   WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());  
   int wait=10;
-  while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500); Serial.print("~");}
+  while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500);} //Serial.print("~");
   if (WiFi.status()==WL_CONNECTED) {
+    //WiFi.mode(WIFI_MODE_APSTA);
     epaper_print_status2(WiFi.localIP().toString() + " @ " + wifiSSID);
     connectSocketIO();
     return true;  
   } else {
+    //WiFi.mode(WIFI_MODE_AP);
     epaper_print_status2(wifiSSID + " connect failed");
     setupAP();
     if (rebootOnNoWiFi) {
@@ -223,6 +224,33 @@ bool connectWiFi() {
       delay(15000); ESP.restart();
     }
     return false;
+  }
+}
+
+void WiFiEvent(WiFiEvent_t event)
+{
+  switch (event) {
+    case SYSTEM_EVENT_AP_START:
+      //WiFi.softAPsetHostname(AP_SSID);
+      break;
+    case SYSTEM_EVENT_STA_START:
+      //WiFi.setHostname(AP_SSID);
+      break;
+    case SYSTEM_EVENT_STA_CONNECTED:
+      break;
+    case SYSTEM_EVENT_AP_STA_GOT_IP6:
+      break;
+    case SYSTEM_EVENT_STA_GOT_IP:
+      wifi_connected = true;
+      //WiFi.mode(WIFI_MODE_APSTA);
+      break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+      wifi_connected = false;
+      //delay(10000);
+      //connectWiFi();
+      break;
+    default:
+      break;
   }
 }
 
@@ -303,33 +331,6 @@ void goToDeepSleep() {
   digitalWrite(2, true); 
   delay(1000);
   esp_deep_sleep_start();
-}
-
-void WiFiEvent(WiFiEvent_t event)
-{
-  switch (event) {
-    case SYSTEM_EVENT_AP_START:
-      //WiFi.softAPsetHostname(AP_SSID);
-      break;
-    case SYSTEM_EVENT_STA_START:
-      //WiFi.setHostname(AP_SSID);
-      break;
-    case SYSTEM_EVENT_STA_CONNECTED:
-      break;
-    case SYSTEM_EVENT_AP_STA_GOT_IP6:
-      break;
-    case SYSTEM_EVENT_STA_GOT_IP:
-      wifi_connected = true;
-      //WiFi.mode(WIFI_MODE_APSTA);
-      break;
-    case SYSTEM_EVENT_STA_DISCONNECTED:
-      wifi_connected = false;
-      //delay(10000);
-      //connectWiFi();
-      break;
-    default:
-      break;
-  }
 }
 
 void epaper_init()
