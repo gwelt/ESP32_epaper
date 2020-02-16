@@ -18,32 +18,28 @@ AsyncWebServer asyncServer(80);
 
 #include <Preferences.h>
 Preferences preferences;
-String wifiSSID, wifiPassword;
-bool rebootOnNoWiFi; // Should it reboot if no WiFi could be connected?
+String pref_wifiSSID, pref_wifiPassword;
+uint32_t pref_time_to_sleep = 900;
+uint32_t pref_max_idle_secs = 60;
 
 #include <SocketIOClient.h>
 SocketIOClient sIOclient;
 extern String R;
-extern String RID;
-extern String Rname;
-extern String Rcontent;
 
-//#define ESP32
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR int counter = 0; // current counter
 unsigned long timeflag = 0; // millis at last update
 static volatile bool wifi_connected = false;
-static volatile bool sIOshouldBeConnected=false;
+static volatile bool sIO_connected=false;
 static volatile bool deepsleep=false;
 static volatile bool restart=false;
 
-int ten_seconds_heartbeat_counter=6;
-int idle_counter=0;
+int last_action=millis();
 
 void setup()
 {
 	pinMode(2, OUTPUT);
-	blink(2,100);
+	blink(1,250);
 
 	Serial.begin(115200);
 	display.init(115200);
@@ -53,77 +49,69 @@ void setup()
 
 	epaper_init();
 
+	loadPreferences();
+
 	++bootCount;
 	switch(esp_sleep_get_wakeup_cause())
 	{
-		case 4 : epaper_print_status1("Boot #" + String(bootCount)+" (timer)"); idle_counter=MAX_IDLE_10_SECS-1; break; /* just 10 seconds till next sleep if timer caused wake-up */
+		case 4 : epaper_print_status1("Boot #" + String(bootCount)+" (timer)"); deepsleep=true; break;
 		case 5 : epaper_print_status1("Boot #" + String(bootCount)+" (touch)"); break;
 		default : epaper_print_status1("Boot #" + String(bootCount)+" (start)"); break;
 	}
-	epaper_message();
 
-	loadPreferences();
 	connectWiFi();
 	startHTTPserver();
+
+	epaper_message();
 }
 
 void loop(){
-	if (deepsleep) {WiFi.disconnect(); esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * 1000000ULL); delay(1000); goToDeepSleep();}
+	if (deepsleep) {WiFi.disconnect(); esp_sleep_enable_timer_wakeup(pref_time_to_sleep * 1000000ULL); delay(1000); goToDeepSleep();}
 	if (restart) {WiFi.disconnect(); delay(1000); ESP.restart();}
 	
 	if (abs(millis()-timeflag)>10000) {
-		/* this is starting every 10 seconds */
-		timeflag = millis();
+		/* this is starting every 10 seconds - and at the very beginning */
+		timeflag=millis();
 		
-		if (idle_counter++>=MAX_IDLE_10_SECS) {deepsleep=true;} // go to sleep after MAX_IDLE_10_SECS*10 seconds idle-time
+		if (timeflag-last_action>=pref_max_idle_secs*1000) {deepsleep=true;} // go to sleep after pref_max_idle_secs seconds idle-time
 
-		if (sIOshouldBeConnected) {
-			if (!sIOclient.connected()) {sIOclient.disconnect(); sIOshouldBeConnected=false;} 
+		if (sIO_connected) {
+			if (!sIOclient.connected()) {sIOclient.disconnect(); sIO_connected=false;} 
 			else {sIOclient.heartbeat(1);}
 		}
-		if (wifi_connected && !sIOshouldBeConnected) {
+		if (wifi_connected && !sIO_connected) {
 			connectSocketIO();
 		}
 
 	}
 
-	if (sIOshouldBeConnected && sIOclient.monitor())
+	if (sIO_connected && sIOclient.monitor())
 	{
 		blink(1,50);
-		idle_counter=0;
+		//last_action=millis();
 		epaper_print(R.substring(R.indexOf("\",") + 3, R.indexOf("\"\]")));
-		//sIOclient.send("message","time");
-		/*
-		if (Rname=="time") {epaper_print(Rcontent);}
-		if (Rname=="number") {epaper_print(Rcontent);}
-		if (Rname=="welcomemessage") {epaper_print(Rcontent); sIOclient.send("broadcast","get","time");}
-		if (Rname=="") {connectSocketIO();}
-		Rname="";
-		*/
 	}
 }
 
-bool savePreferences(String qsid, String qpass, bool rebootOnNoWiFi) {
+bool savePreferences(String qsid, String qpass, uint32_t qtime_to_sleep, uint32_t qmax_idle_secs) {
+	preferences.begin("pref", false);
 	// Remove all preferences under opened namespace
 	preferences.clear();
-	preferences.begin("wifi", false);
 	preferences.putString("ssid", qsid);
-	preferences.putString("password", qpass);
-	preferences.putBool("rebootOnNoWiFi", rebootOnNoWiFi);
-	delay(300);
+	preferences.putString("password", (qpass!="")?qpass:pref_wifiPassword);
+	preferences.putUInt("max_idle_secs", qmax_idle_secs);
+	preferences.putUInt("time_to_sleep", qtime_to_sleep);
 	preferences.end();
-	wifiSSID = qsid;
-	wifiPassword = qpass;
+	delay(300);
 	loadPreferences();
 }
 
 bool loadPreferences() {
-	// Remove all preferences under opened namespace
-	preferences.clear();
-	preferences.begin("wifi", false);
-	wifiSSID =  preferences.getString("ssid", "none");
-	wifiPassword =  preferences.getString("password", "none");
-	rebootOnNoWiFi =  preferences.getBool("rebootOnNoWiFi", false);
+	preferences.begin("pref", false);
+	pref_wifiSSID =  preferences.getString("ssid", "");
+	pref_wifiPassword = preferences.getString("password", "");
+	pref_max_idle_secs = preferences.getUInt("max_idle_secs", pref_max_idle_secs);
+	pref_time_to_sleep = preferences.getUInt("time_to_sleep", pref_time_to_sleep);
 	preferences.end();
 }
 
@@ -141,21 +129,16 @@ bool setupAP() {
 bool connectWiFi() {
 	WiFi.onEvent(WiFiEvent);
 	WiFi.mode(WIFI_MODE_APSTA);
-	WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());  
+	WiFi.begin(pref_wifiSSID.c_str(), pref_wifiPassword.c_str());
 	int wait=10;
-	while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500);} //Serial.print("~");
+	while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500);}
 	if (WiFi.status()==WL_CONNECTED) {
 		WiFi.mode(WIFI_MODE_STA);
-		epaper_print_status2(WiFi.localIP().toString() + " @ " + wifiSSID);
-		connectSocketIO();
+		epaper_print_status2(WiFi.localIP().toString() + " @ " + WiFi.SSID());
 		return true;  
 	} else {
-		epaper_print_status2(wifiSSID + " connect failed");
+		epaper_print_status2(pref_wifiSSID + " connect failed");
 		setupAP();
-		if (rebootOnNoWiFi) {
-			epaper_print("restarting in 60 seconds...");
-			delay(60000); ESP.restart();
-		}
 		return false;
 	}
 }
@@ -175,7 +158,6 @@ void WiFiEvent(WiFiEvent_t event)
 			break;
 		case SYSTEM_EVENT_STA_GOT_IP:
 			wifi_connected = true;
-			//WiFi.mode(WIFI_MODE_APSTA);
 			break;
 		case SYSTEM_EVENT_STA_DISCONNECTED:
 			wifi_connected = false;
@@ -188,15 +170,12 @@ void WiFiEvent(WiFiEvent_t event)
 }
 
 void connectSocketIO() {
-	if (sIOshouldBeConnected) {sIOclient.disconnect();} 
+	if (sIO_connected) {sIOclient.disconnect();} 
 	if (!sIOclient.connect(SOCKETIOHOST, SOCKETIOPORT)) {
-		wifi_connected = false;
 		epaper_print(String(SOCKETIOHOST) + " socket failed");
 	} 
 	if (sIOclient.connected()) {
-		sIOshouldBeConnected=true;
-		//epaper_print("HELLO " + String(sIOclient.sid));
-		//sIOclient.send("message","/nick ESP32");
+		sIO_connected=true;
 		sIOclient.send("message","/repeat");
 	} 
 }
@@ -219,66 +198,65 @@ void doScanNetworks() {
 
 void startHTTPserver() {
 	asyncServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES(""));
 	});
 	asyncServer.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send(200, "text/html", "");
 	});
 	asyncServer.on("/H", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("LED ON"));
 		digitalWrite(2, HIGH); 
 	});
 	asyncServer.on("/L", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("LED OFF"));
 		digitalWrite(2, LOW); 
 	});
 	asyncServer.on("/DISPLAYINIT", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("DISPLAYINIT"));
 		epaper_init();
 	});
 	asyncServer.on("/MILLIS", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
-		epaper_print("MILLIS = "+String(abs(millis())));
+		request->send(200, "text/html", assembleRES("MILLIS"));
+		epaper_print("MILLIS = "+String(millis()));
 	}); 
 	asyncServer.on("/TIME", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("TIME"));
 		//sIOclient.send("broadcast","get","time");
 		sIOclient.send("message","time");
 	});
 	asyncServer.on("/SCANNETWORKS", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("SCANNETWORKS"));
 		doScanNetworks();
 	});
 	asyncServer.on("/RESTART", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("restarting..."));
 		restart=true;
 	});
 	asyncServer.on("/SLEEP", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send(200, "text/html", assembleRES());
+		request->send(200, "text/html", assembleRES("going to sleep..."));
 		delay(2000);
 		deepsleep=true;
 	});
 	
 	asyncServer.on("/conf", HTTP_POST, [](AsyncWebServerRequest *request){
-		if (request->hasArg("ssid") && request->hasArg("pass")) {
-			savePreferences(request->arg("ssid"),request->arg("pass"),(request->arg("rebootOnNoWiFi")=="on"));
-			//request->send(200, "text/html", request->arg("ssid")+" "+request->arg("pass")+" "+String(request->arg("rebootOnNoWiFi")=="on"));
-			request->send(200, "text/html", assembleRES());
+		if (request->hasArg("ssid") && request->hasArg("pass") && request->hasArg("time_to_sleep") && request->hasArg("max_idle_secs")) {
+			savePreferences(request->arg("ssid"),request->arg("pass"),request->arg("time_to_sleep").toInt(),request->arg("max_idle_secs").toInt());
+			delay(500);
+			request->send(200, "text/html", assembleRES("config saved"));
 		} else {
-			request->send(200, "text/html", assembleRES());
+			request->send(200, "text/html", assembleRES("did not write config"));
 		}
 	}); 
 
 	asyncServer.begin();
 }
 
-String assembleRES() {
-	idle_counter=0;
+String assembleRES(String message) {
+	last_action=millis();
 	++counter;
 	blink(1,50);
-	String sid="not connected";
-	if (sIOshouldBeConnected) {sid=sIOclient.sid;}
-	return "<!DOCTYPE html><html lang=\"de\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#FFF\"><meta name=\"Description\" content=\"ESP32\"><title>ESP32</title><style>* {box-sizing: border-box;} html, body, section, div, input, button {border-radius: 0.2rem;font-family: Verdana, Geneva, sans-serif; font-size: 1.2rem;} body {border:0; padding:0%; margin:0; background-color:#FFF; color: #000;} input {width:100%; padding:0.2rem 0.4rem; margin:0.2rem 0; background-color:#F0F0F0; color:#000;border: 2px solid #FFF; outline-width: 0;} .button {border: 2px solid #FFF;outline-width: 0;width:100%; padding:0.2rem 0.4rem; margin:0rem 0;background-color:#0078D4;color:#FFF;cursor:pointer;} .bigscreen {padding:1.4rem; margin:0;} .screen {min-width:280px; max-width:420px; margin:auto;}</style></head><body><div id=\"bigscreen\" class=\"bigscreen\"><div id=\"screen\" class=\"screen\"><a href=\"/\" style='font-weight:bold'>ESP32</a> ("+String(counter)+")<p><a href=\"/SLEEP\">DEEP SLEEP</a> ("+String(bootCount)+") | <a href=\"/RESTART\">RESTART</a><p><form method='post' action='conf'><input name='ssid' value='"+wifiSSID+"' placeholder='WiFi SSID' style='width:50%'><input name='pass' type='password' placeholder='password' style='width:50%'><!--<input type='checkbox' name='rebootOnNoWiFi' style='width:10%'><label for='rebootOnNoWiFi'>rebootOnNoWiFi</label>--><input type='submit' value='save' class=button></form><p>WiFi: "+wifiSSID+"<br>IP: "+WiFi.localIP().toString()+"<br>"+String(sid)+"<br>AP SSID: "+AP_SSID+"<br>rebootOnNoWiFi: "+String(rebootOnNoWiFi)+"<p>LED <a href=\"/H\">ON</a> | <a href=\"/L\">OFF</a><br>DISPLAY <a href=\"/DISPLAYINIT\">INIT</a><br><a href=\"/SCANNETWORKS\">SCAN NETWORKS</a><br><a href=\"/TIME\">REQUEST TIME</a><br><a href=\"/MILLIS\">MILLIS</a>: "+String(abs(millis()))+"</div></div></body></html>";
+	String address=wifi_connected?"<a href=\"/\">"+WiFi.localIP().toString()+ "</a> @ " +WiFi.SSID():"<a href=\"/\">8.8.8.8</a> @ " + String(AP_SSID);
+	return "<!DOCTYPE html><html lang=\"de\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#FFF\"><meta name=\"Description\" content=\"ESP32\"><title>ESP32</title><style>* {box-sizing: border-box;} html, body, section, div, input, button {border-radius: 0.2rem;font-family: Verdana, Geneva, sans-serif; font-size: 1.15rem; width:100%} body {border:0; padding:0%; margin:0; background-color:#FFF; color: #000;} input {padding:0.2rem 0.4rem; margin:0rem; background-color:#F0F0F0; color:#000;border: 2px solid #F0F0F0; outline-width: 0;} a {color:#0078D4} .button {border: 2px solid #0078D4;outline-width: 0; padding:0.2rem 0.4rem; margin:0.8rem 0rem;background-color:#0078D4;color:#FFF;cursor:pointer;} .bigscreen {padding:1rem 1.3rem 1rem 1rem; margin:0;} .screen {min-width:280px; max-width:420px; margin:auto;} .message {font-size:1.5rem; padding:0.2rem 0rem;} .label {padding:0.2rem 0.4rem 0rem 0.4rem; margin:0.2rem 0rem 0rem 0rem; font-size:0.8rem; background-color:#FFF; color:#000; border: 2px solid #FFF;}</style></head><body><div id=\"bigscreen\" class=\"bigscreen\"><div id=\"screen\" class=\"screen\"><div class=\"message\"><b>ESP32</b> "+ message +"</div>" +address+ "<p><form method='post' action='conf'><div class='label'>max_idle_secs</div><input name='max_idle_secs' value='"+pref_max_idle_secs+"' placeholder='max idle seconds'><div class='label'>time_to_sleep</div><input name='time_to_sleep' value='"+pref_time_to_sleep+"' placeholder='sleep-time seconds'><div class='label'>WiFi SSID</div><input name='ssid' value='"+pref_wifiSSID+"' placeholder='WiFi SSID'><div class='label'>WiFi password</div><input name='pass' type='password' placeholder='password'><input type='submit' value='save configuration' class=button></form><p><a href=\"/SLEEP\">DEEP SLEEP</a> ("+String(bootCount)+") | <a href=\"/RESTART\">RESTART</a><p>LED <a href=\"/H\">ON</a> | <a href=\"/L\">OFF</a> | DISPLAY <a href=\"/DISPLAYINIT\">INIT</a> | <a href=\"/SCANNETWORKS\">SCAN NETWORKS</a> | <a href=\"/TIME\">REQUEST TIME</a> | <a href=\"/MILLIS\">MILLIS</a>: "+String(millis())+"<br>SocketIO: "+String(sIOclient.sid)+"<br>COUNTER: "+String(counter)+"</div></div></body></html>";
 }
 
 void blink(int z, int d) {
@@ -291,7 +269,7 @@ void blink(int z, int d) {
 }
 
 void goToDeepSleep() {
-	epaper_print_status2("SLEEPING " + String(TIME_TO_SLEEP) + " > touch PIN");
+	epaper_print_status2("SLEEPING " + String(pref_time_to_sleep) + " > touch PIN");
 	display.update();
 	//#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex
 	//DEEP SLEEP while PIN 33 is connected to GND //or while touchsensor on PIN15 isn't touched
