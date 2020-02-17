@@ -13,6 +13,7 @@ const GFXfont* f24 = &FreeMonoBold24pt7b;
 GxIO_Class io(SPI, /*CS=5*/ SS, /*DC=*/ 17, /*RST=*/ 16); // arbitrary selection of 17, 16
 GxEPD_Class display(io, /*RST=*/ 16, /*BUSY=*/ 4); // arbitrary selection of (16), 4
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <ESPAsyncWebServer.h>
 AsyncWebServer asyncServer(80);
 
@@ -34,7 +35,8 @@ static volatile bool sIO_connected=false;
 static volatile bool deepsleep=false;
 static volatile bool restart=false;
 
-int last_action=millis();
+static volatile bool started_by_timer=false;
+int last_action=0;
 
 void setup()
 {
@@ -53,7 +55,7 @@ void setup()
 	++bootCount;
 	switch(esp_sleep_get_wakeup_cause())
 	{
-		case 4 : epaper_print_status1("Boot #" + String(bootCount)+" (timer)"); deepsleep=true; break;
+		case 4 : epaper_print_status1("Boot #" + String(bootCount)+" (timer)"); started_by_timer=true; break;
 		case 5 : epaper_print_status1("Boot #" + String(bootCount)+" (touch)"); break;
 		default : epaper_print_status1("Boot #" + String(bootCount)+" (start)"); break;
 	}
@@ -62,6 +64,9 @@ void setup()
 	startHTTPserver();
 
 	epaper_message();
+
+	last_action=millis();
+	if (started_by_timer) {last_action=millis()-pref_max_idle_secs*1000+10000;} // always sleep after 10 seconds, if started_by_timer
 }
 
 void loop(){
@@ -125,18 +130,21 @@ bool setupAP() {
 	IPAddress AP_subnet(255,255,255,0);
 	WiFi.softAPConfig(AP_local_IP, AP_gateway, AP_subnet);
 	delay(250);
-	WiFi.softAP(AP_SSID);
-	epaper_print_status2("8.8.8.8 @ " + String(AP_SSID));
+	WiFi.softAP("8.8.8.8");
+	epaper_print_status2("8.8.8.8 @ 8.8.8.8");
 }
 
 bool connectWiFi() {
 	WiFi.onEvent(WiFiEvent);
-	WiFi.mode(WIFI_MODE_APSTA);
+	WiFi.mode(WIFI_MODE_STA);
+	#ifdef MAC 
+		uint8_t newMACAddress[] = MAC;
+		esp_wifi_set_mac(ESP_IF_WIFI_STA, &newMACAddress[0]);
+	#endif
 	WiFi.begin(pref_wifiSSID.c_str(), pref_wifiPassword.c_str());
 	int wait=10;
 	while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500);}
 	if (WiFi.status()==WL_CONNECTED) {
-		WiFi.mode(WIFI_MODE_STA);
 		epaper_print_status2(WiFi.localIP().toString() + " @ " + WiFi.SSID());
 		return true;  
 	} else {
@@ -150,10 +158,8 @@ void WiFiEvent(WiFiEvent_t event)
 {
 	switch (event) {
 		case SYSTEM_EVENT_AP_START:
-			//WiFi.softAPsetHostname(AP_SSID);
 			break;
 		case SYSTEM_EVENT_STA_START:
-			//WiFi.setHostname(AP_SSID);
 			break;
 		case SYSTEM_EVENT_STA_CONNECTED:
 			break;
@@ -171,14 +177,16 @@ void WiFiEvent(WiFiEvent_t event)
 }
 
 void connectSocketIO() {
-	if (sIO_connected) {sIOclient.disconnect();} 
-	if (!sIOclient.connect(SOCKETIOHOST, SOCKETIOPORT)) {
-		epaper_print(String(SOCKETIOHOST) + " socket failed");
-	} 
-	if (sIOclient.connected()) {
-		sIO_connected=true;
-		sIOclient.send("message","/repeat");
-	} 
+	#if defined(SOCKETIOHOST) && defined(SOCKETIOPORT)
+		if (sIO_connected) {sIOclient.disconnect();} 
+		if (!sIOclient.connect(SOCKETIOHOST, SOCKETIOPORT)) {
+			epaper_print(String(SOCKETIOHOST) + " socket failed");
+		} 
+		if (sIOclient.connected()) {
+			sIO_connected=true;
+			sIOclient.send("message","/repeat");
+		}
+	#endif 
 }
 
 void doScanNetworks() {
@@ -236,8 +244,7 @@ void startHTTPserver() {
 	asyncServer.on("/SLEEP", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send(200, "text/html", assembleRES("sleeping"));
 		deepsleep=true;
-	});
-	
+	});	
 	asyncServer.on("/conf", HTTP_POST, [](AsyncWebServerRequest *request){
 		if (request->hasArg("ssid") && request->hasArg("pass") && request->hasArg("time_to_sleep") && request->hasArg("max_idle_secs")) {
 			savePreferences(request->arg("ssid"),request->arg("pass"),request->arg("time_to_sleep").toInt(),request->arg("max_idle_secs").toInt());
@@ -254,8 +261,8 @@ String assembleRES(String message) {
 	last_action=millis();
 	++counter;
 	blink(1,50);
-	String address=wifi_connected?"<a href=\"/\">"+WiFi.localIP().toString()+ "</a> @ " +WiFi.SSID():"<a href=\"/\">8.8.8.8</a> @ " + String(AP_SSID);
-	return "<!DOCTYPE html><html lang=\"de\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#FFF\"><meta name=\"Description\" content=\"ESP32\"><title>ESP32</title><style>* {box-sizing: border-box;} html, body, section, div, input, button {border-radius: 0.2rem;font-family: Verdana, Geneva, sans-serif; font-size: 1.15rem; width:100%} body {border:0; padding:0%; margin:0; background-color:#FFF; color: #000;} input {padding:0.2rem 0.4rem; margin:0rem; background-color:#F0F0F0; color:#000;border: 2px solid #F0F0F0; outline-width: 0;} a {color:#0078D4} .button {border: 2px solid #0078D4;outline-width: 0; padding:0.2rem 0.4rem; margin:0.8rem 0rem;background-color:#0078D4;color:#FFF;cursor:pointer;} .button:active {background-color:#0068C4;} .bigscreen {padding:1rem 1.3rem 1rem 1rem; margin:0;} .screen {min-width:280px; max-width:420px; margin:auto;} .message {font-size:1.5rem; padding:0.2rem 0rem;} .label {padding:0.2rem 0.3rem 0rem 0.3rem; margin:0.2rem 0rem 0rem 0rem; font-size:0.8rem; background-color:#FFF; color:#000; border: 2px solid #FFF;} .footer {padding:0; margin:0; font-size:0.8rem;}</style></head><body><div id=\"bigscreen\" class=\"bigscreen\"><div id=\"screen\" class=\"screen\"><div class=\"message\"><b>ESP32</b> "+ message +"</div>" +address+ "<button class=button style='width:49%;float:left;'; onclick='window.location=\"/SLEEP\"'>sleep</button><button class=button style='width:49%;float:right;'; onclick='window.location=\"/RESTART\"'>restart</button><div style='clear:both'></div><p><form method='post' action='conf'><div class='label'>go to sleep, if system is idle for (seconds)</div><input name='max_idle_secs' value='"+pref_max_idle_secs+"'><div class='label'>duration of sleep (seconds)</div><input name='time_to_sleep' value='"+pref_time_to_sleep+"'><div class='label'>WiFi SSID</div><input name='ssid' value='"+pref_wifiSSID+"'><div class='label'>WiFi password</div><input name='pass' type='password' placeholder='********'><input type='submit' value='save configuration' class=button></form><p><div class=footer>LED <a href=\"/H\">ON</a> | <a href=\"/L\">OFF</a> | DISPLAY <a href=\"/DISPLAYINIT\">INIT</a> | <a href=\"/SCANNETWORKS\">SCAN&nbsp;NETWORKS</a> | <a href=\"/TIME\">REQUEST TIME</a> | page-counter: "+String(counter)+" | boot-counter: "+String(bootCount)+" | <a href=\"/MILLIS\">millis</a>: "+String(millis())+"<br>socket: "+String(sIOclient.sid)+"<p><a href=https://github.com/gwelt/ESP32_epaper>https://github.com/gwelt/ESP32_epaper</a></div></div></div></body></html>";
+	String address=wifi_connected?"<a href=\"/\">"+WiFi.localIP().toString()+ "</a> @ " +WiFi.SSID():"<a href=\"/\">"+WiFi.softAPIP().toString()+"</a> @ 8.8.8.8";
+	return "<!DOCTYPE html><html lang=\"de\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#FFF\"><meta name=\"Description\" content=\"ESP32\"><title>ESP32</title><style>* {box-sizing: border-box;} html, body, section, div, input, button {border-radius: 0.2rem;font-family: Verdana, Geneva, sans-serif; font-size: 1.15rem; width:100%} body {border:0; padding:0%; margin:0; background-color:#FFF; color: #000;} input {padding:0.2rem 0.4rem; margin:0rem; background-color:#F0F0F0; color:#000;border: 2px solid #F0F0F0; outline-width: 0;} a {color:#0078D4} .button {border: 2px solid #0078D4;outline-width: 0; padding:0.2rem 0.4rem; margin:0.8rem 0rem;background-color:#0078D4;color:#FFF;cursor:pointer;} .button:active {background-color:#0068C4;} .bigscreen {padding:1rem 1.3rem 1rem 1rem; margin:0;} .screen {min-width:280px; max-width:420px; margin:auto;} .message {font-size:1.5rem; padding:0.2rem 0rem;} .label {padding:0.2rem 0.3rem 0rem 0.3rem; margin:0.2rem 0rem 0rem 0rem; font-size:0.8rem; background-color:#FFF; color:#000; border: 2px solid #FFF;} .footer {padding:0; margin:0; font-size:0.8rem;}</style></head><body><div id=\"bigscreen\" class=\"bigscreen\"><div id=\"screen\" class=\"screen\"><div class=\"message\"><b>ESP32</b> "+ message +"</div>" +address+ "<br><button class=button style='width:49%;float:left;'; onclick='window.location=\"/SLEEP\"'>sleep</button><button class=button style='width:49%;float:right;'; onclick='window.location=\"/RESTART\"'>restart</button><div style='clear:both'></div><p><form id='conf_form' name='conf_form' method='post' action='conf'><div class='label'>WiFi name (SSID) to connect to</div><input name='ssid' value='"+pref_wifiSSID+"'><div class='label'>WiFi password</div><input name='pass' type='password' placeholder='********'><div class='label'>sleep if system is idle for (seconds)</div><input name='max_idle_secs' value='"+pref_max_idle_secs+"'><div class='label'>duration of sleep (seconds)</div><input name='time_to_sleep' value='"+pref_time_to_sleep+"'><button class=button onclick='document.conf_form.submit();'>save configuration</button></form><p><div class=footer>LED <a href=\"/H\">ON</a> | <a href=\"/L\">OFF</a> | DISPLAY <a href=\"/DISPLAYINIT\">INIT</a> | <a href=\"/SCANNETWORKS\">SCAN&nbsp;NETWORKS</a> | <a href=\"/TIME\">REQUEST TIME</a> | page-counter: "+String(counter)+" | boot-counter: "+String(bootCount)+" | <a href=\"/MILLIS\">millis</a>: "+String(millis())+" | socket: "+String(sIOclient.sid)+" | MAC address: "+WiFi.macAddress()+"<p><a href=https://github.com/gwelt/ESP32_epaper>https://github.com/gwelt/ESP32_epaper</a></div></div></div></body></html>";
 }
 
 void blink(int z, int d) {
