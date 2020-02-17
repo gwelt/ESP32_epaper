@@ -50,7 +50,7 @@ void setup()
 
 	epaper_init();
 
-	//loadPreferences();
+	loadPreferences();
 
 	++bootCount;
 	switch(esp_sleep_get_wakeup_cause())
