@@ -50,7 +50,7 @@ void setup()
 
 	epaper_init();
 
-	loadPreferences();
+	//loadPreferences();
 
 	++bootCount;
 	switch(esp_sleep_get_wakeup_cause())
@@ -136,7 +136,7 @@ bool setupAP() {
 
 bool connectWiFi() {
 	WiFi.onEvent(WiFiEvent);
-	WiFi.mode(WIFI_MODE_STA);
+	WiFi.mode(WIFI_MODE_APSTA);
 	#ifdef MAC 
 		uint8_t newMACAddress[] = MAC;
 		esp_wifi_set_mac(ESP_IF_WIFI_STA, &newMACAddress[0]);
@@ -145,6 +145,7 @@ bool connectWiFi() {
 	int wait=10;
 	while (WiFi.status() != WL_CONNECTED && wait>0) {wait--; delay(500);}
 	if (WiFi.status()==WL_CONNECTED) {
+		WiFi.mode(WIFI_MODE_STA);
 		epaper_print_status2(WiFi.localIP().toString() + " @ " + WiFi.SSID());
 		return true;  
 	} else {
