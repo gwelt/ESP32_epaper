@@ -377,9 +377,9 @@ void epaper_update(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const String&
 {
 	display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
 	/*
-	*/
 	display.fillRect(x, y, w, h, GxEPD_BLACK);
-	display.updateWindow(x, y, w, h, false);
+	display.updateWindow(x, y, w, h, true);
+	*/
 	display.fillRect(x, y, w, h, GxEPD_WHITE);
 	display.setCursor(x,y+22);
 	display.setFont(font);
