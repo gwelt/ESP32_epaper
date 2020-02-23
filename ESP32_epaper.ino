@@ -14,18 +14,22 @@ GxIO_Class io(SPI, /*CS=5*/ SS, /*DC=*/ 17, /*RST=*/ 16); // arbitrary selection
 GxEPD_Class display(io, /*RST=*/ 16, /*BUSY=*/ 4); // arbitrary selection of (16), 4
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <HTTPClient.h>
 #include <ESPAsyncWebServer.h>
 AsyncWebServer asyncServer(80);
+
+#include <SocketIOClient.h>
+SocketIOClient sIOclient;
+extern String R;
+
+#include <ArduinoJson.h>
 
 #include <Preferences.h>
 Preferences preferences;
 String pref_wifiSSID, pref_wifiPassword;
 uint32_t pref_time_to_sleep = 900;
 uint32_t pref_max_idle_secs = 60;
-
-#include <SocketIOClient.h>
-SocketIOClient sIOclient;
-extern String R;
+String pref_contentURL;
 
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR int counter = 0; // current counter
@@ -63,8 +67,14 @@ void setup()
 	connectWiFi();
 	startHTTPserver();
 
-	epaper_message();
-
+	if (wifi_connected) {
+		String JSON = getHTTPressource(pref_contentURL);
+		epaper_print_headline(parseJSON(JSON,"headline"));
+		epaper_print_content(parseJSON(JSON,"content"));
+	} else {
+		epaper_print_headline("Hello World!");
+	}
+	
 	last_action=millis();
 	if (started_by_timer) {last_action=millis()-pref_max_idle_secs*1000+10000;} // always sleep after 10 seconds, if started_by_timer
 }
@@ -79,13 +89,19 @@ void loop(){
 		
 		if (timeflag-last_action>=pref_max_idle_secs*1000) {deepsleep=true;} // go to sleep after pref_max_idle_secs seconds idle-time
 
+		if (wifi_connected) {
+			//epaper_print(getHTTPressource(pref_contentURL));
+		}
+
 		if (sIO_connected) {
 			if (!sIOclient.connected()) {sIOclient.disconnect(); sIO_connected=false;} 
 			else {sIOclient.heartbeat(1);}
 		}
+		/*
 		if (wifi_connected && !sIO_connected) {
 			connectSocketIO();
 		}
+		*/
 
 	}
 
@@ -98,7 +114,7 @@ void loop(){
 	delay(1000);
 }
 
-bool savePreferences(String qsid, String qpass, uint32_t qtime_to_sleep, uint32_t qmax_idle_secs) {
+bool savePreferences(String qsid, String qpass, uint32_t qtime_to_sleep, uint32_t qmax_idle_secs, String qcontentURL) {
 	preferences.begin("pref", false);
 	// Remove all preferences under opened namespace
 	preferences.clear();
@@ -106,6 +122,7 @@ bool savePreferences(String qsid, String qpass, uint32_t qtime_to_sleep, uint32_
 	preferences.putString("password", (qpass!="")?qpass:pref_wifiPassword);
 	preferences.putUInt("max_idle_secs", qmax_idle_secs);
 	preferences.putUInt("time_to_sleep", qtime_to_sleep);
+	preferences.putString("contentURL", qcontentURL);
 	preferences.end();
 	delay(250);
 	loadPreferences();
@@ -120,6 +137,7 @@ bool loadPreferences() {
 	if (pref_max_idle_secs<30) {pref_max_idle_secs=30;}
 	pref_time_to_sleep = preferences.getUInt("time_to_sleep", pref_time_to_sleep);
 	if (pref_time_to_sleep<30) {pref_time_to_sleep=30;}
+	pref_contentURL =  preferences.getString("contentURL", "");
 	preferences.end();
 }
 
@@ -177,6 +195,31 @@ void WiFiEvent(WiFiEvent_t event)
 	}
 }
 
+String getHTTPressource(String url) {
+	String payload = "---";
+	HTTPClient http;
+	http.begin(url);
+	int httpCode = http.GET();
+	if(httpCode > 0) {
+		if(httpCode == HTTP_CODE_OK) {
+			payload = http.getString();
+		} else {
+			payload = "HTTP-ERROR: "+String(httpCode);
+		}
+	} else {
+		payload = "HTTP-ERROR: "+String(httpCode);
+	}
+	http.end();
+	return payload;
+}
+
+String parseJSON(String json, String request_name) {
+	DynamicJsonDocument doc(512);
+	DeserializationError error = deserializeJson(doc, json);
+	if (error) return json;
+	return doc[request_name];
+}
+
 void connectSocketIO() {
 	#if defined(SOCKETIOHOST) && defined(SOCKETIOPORT)
 		if (sIO_connected) {sIOclient.disconnect();} 
@@ -231,12 +274,21 @@ void startHTTPserver() {
 	}); 
 	asyncServer.on("/TIME", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send(200, "text/html", assembleRES("TIME"));
-		//sIOclient.send("broadcast","get","time");
 		sIOclient.send("message","time");
 	});
+	asyncServer.on("/UPDATE", HTTP_GET, [](AsyncWebServerRequest *request){
+		request->send(200, "text/html", assembleRES("UPDATE"));
+		String JSON = getHTTPressource(pref_contentURL);
+		epaper_print_headline(parseJSON(JSON,"headline"));
+		epaper_print_content(parseJSON(JSON,"content"));
+	}); 
 	asyncServer.on("/SCANNETWORKS", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send(200, "text/html", assembleRES("SCANNETWORKS"));
 		doScanNetworks();
+	});
+	asyncServer.on("/CONNECTSOCKET", HTTP_GET, [](AsyncWebServerRequest *request){
+		request->send(200, "text/html", assembleRES("CONNECTSOCKET"));
+		connectSocketIO();
 	});
 	asyncServer.on("/RESTART", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send(200, "text/html", assembleRES("restarting"));
@@ -247,8 +299,8 @@ void startHTTPserver() {
 		deepsleep=true;
 	});	
 	asyncServer.on("/conf", HTTP_POST, [](AsyncWebServerRequest *request){
-		if (request->hasArg("ssid") && request->hasArg("pass") && request->hasArg("time_to_sleep") && request->hasArg("max_idle_secs")) {
-			savePreferences(request->arg("ssid"),request->arg("pass"),request->arg("time_to_sleep").toInt(),request->arg("max_idle_secs").toInt());
+		if (request->hasArg("ssid") && request->hasArg("pass") && request->hasArg("time_to_sleep") && request->hasArg("max_idle_secs") && request->hasArg("contentURL")) {
+			savePreferences(request->arg("ssid"),request->arg("pass"),request->arg("time_to_sleep").toInt(),request->arg("max_idle_secs").toInt(),request->arg("contentURL"));
 			request->send(200, "text/html", assembleRES("config saved"));
 		} else {
 			request->send(200, "text/html", assembleRES("did not write config"));
@@ -263,7 +315,7 @@ String assembleRES(String message) {
 	++counter;
 	blink(1,50);
 	String address=wifi_connected?"<a href=\"/\">"+WiFi.localIP().toString()+ "</a> @ " +WiFi.SSID():"<a href=\"/\">"+WiFi.softAPIP().toString()+"</a> @ 8.8.8.8";
-	return "<!DOCTYPE html><html lang=\"de\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#FFF\"><meta name=\"Description\" content=\"ESP32\"><title>ESP32</title><style>* {box-sizing: border-box;} html, body, section, div, input, button {border-radius: 0.2rem;font-family: Verdana, Geneva, sans-serif; font-size: 1.15rem; width:100%} body {border:0; padding:0%; margin:0; background-color:#FFF; color: #000;} input {padding:0.2rem 0.4rem; margin:0rem; background-color:#F0F0F0; color:#000;border: 2px solid #F0F0F0; outline-width: 0;} a {color:#0078D4} .button {border: 2px solid #0078D4;outline-width: 0; padding:0.2rem 0.4rem; margin:0.8rem 0rem;background-color:#0078D4;color:#FFF;cursor:pointer;} .button:active {background-color:#0068C4;} .bigscreen {padding:1rem 1.3rem 1rem 1rem; margin:0;} .screen {min-width:280px; max-width:420px; margin:auto;} .message {font-size:1.5rem; padding:0.2rem 0rem;} .label {padding:0.2rem 0.3rem 0rem 0.3rem; margin:0.2rem 0rem 0rem 0rem; font-size:0.8rem; background-color:#FFF; color:#000; border: 2px solid #FFF;} .footer {padding:0; margin:0; font-size:0.8rem;}</style></head><body><div id=\"bigscreen\" class=\"bigscreen\"><div id=\"screen\" class=\"screen\"><div class=\"message\"><b>ESP32</b> "+ message +"</div>" +address+ "<br><button class=button style='width:49%;float:left;'; onclick='window.location=\"/SLEEP\"'>sleep</button><button class=button style='width:49%;float:right;'; onclick='window.location=\"/RESTART\"'>restart</button><div style='clear:both'></div><p><form id='conf_form' name='conf_form' method='post' action='conf'><div class='label'>WiFi name (SSID) to connect to</div><input name='ssid' value='"+pref_wifiSSID+"'><div class='label'>WiFi password</div><input name='pass' type='password' placeholder='********'><div class='label'>sleep if system is idle for (seconds)</div><input name='max_idle_secs' value='"+pref_max_idle_secs+"'><div class='label'>duration of sleep (seconds)</div><input name='time_to_sleep' value='"+pref_time_to_sleep+"'><button class=button onclick='document.conf_form.submit();'>save configuration</button></form><p><div class=footer>LED <a href=\"/H\">ON</a> | <a href=\"/L\">OFF</a> | DISPLAY <a href=\"/DISPLAYINIT\">INIT</a> | <a href=\"/SCANNETWORKS\">SCAN&nbsp;NETWORKS</a> | <a href=\"/TIME\">REQUEST TIME</a> | page-counter: "+String(counter)+" | boot-counter: "+String(bootCount)+" | <a href=\"/MILLIS\">millis</a>: "+String(millis())+" | socket: "+String(sIOclient.sid)+" | MAC address: "+WiFi.macAddress()+"<p><a href=https://github.com/gwelt/ESP32_epaper>https://github.com/gwelt/ESP32_epaper</a></div></div></div></body></html>";
+	return "<!DOCTYPE html><html lang=\"de\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#FFF\"><meta name=\"Description\" content=\"ESP32\"><title>ESP32</title><style>* {box-sizing: border-box;} html, body, section, div, input, button {border-radius: 0.2rem;font-family: Verdana, Geneva, sans-serif; font-size: 1.15rem; width:100%} body {border:0; padding:0%; margin:0; background-color:#FFF; color: #000;} input {padding:0.2rem 0.4rem; margin:0rem; background-color:#F0F0F0; color:#000;border: 2px solid #F0F0F0; outline-width: 0;} a {color:#0078D4} .button {border: 2px solid #0078D4;outline-width: 0; padding:0.2rem 0.4rem; margin:0.8rem 0rem;background-color:#0078D4;color:#FFF;cursor:pointer;} .button:active {background-color:#0068C4;} .bigscreen {padding:1rem 1.3rem 1rem 1rem; margin:0;} .screen {min-width:280px; max-width:420px; margin:auto;} .message {font-size:1.5rem; padding:0.2rem 0rem;} .label {padding:0.2rem 0.3rem 0rem 0.3rem; margin:0.2rem 0rem 0rem 0rem; font-size:0.8rem; background-color:#FFF; color:#000; border: 2px solid #FFF;} .footer {padding:0; margin:0; font-size:0.8rem;}</style></head><body><div id=\"bigscreen\" class=\"bigscreen\"><div id=\"screen\" class=\"screen\"><div class=\"message\"><b>ESP32</b> "+ message +"</div>" +address+ "<br><button class=button style='width:49%;float:left;'; onclick='window.location=\"/SLEEP\"'>sleep</button><button class=button style='width:49%;float:right;'; onclick='window.location=\"/RESTART\"'>restart</button><div style='clear:both'></div><p><form id='conf_form' name='conf_form' method='post' action='conf'><div class='label'>WiFi name (SSID) to connect to</div><input name='ssid' value='"+pref_wifiSSID+"'><div class='label'>WiFi password</div><input name='pass' type='password' placeholder='********'><div class='label'>sleep if system is idle for (seconds)</div><input name='max_idle_secs' value='"+pref_max_idle_secs+"'><div class='label'>duration of sleep (seconds)</div><input name='time_to_sleep' value='"+pref_time_to_sleep+"'><div class='label'>content URL</div><input name='contentURL' value='"+pref_contentURL+"'><button class=button onclick='document.conf_form.submit();'>save configuration</button></form><p><div class=footer>LED <a href=\"/H\">ON</a> | <a href=\"/L\">OFF</a> | <a href=\"/CONNECTSOCKET\">CONNECTSOCKET</a> | DISPLAY <a href=\"/DISPLAYINIT\">INIT</a> | <a href=\"/SCANNETWORKS\">SCAN&nbsp;NETWORKS</a> | <a href=\"/TIME\">REQUEST TIME</a> | <a href=\"/UPDATE\">UPDATE</a> | page-counter: "+String(counter)+" | boot-counter: "+String(bootCount)+" | <a href=\"/MILLIS\">millis</a>: "+String(millis())+" | socket: "+String(sIOclient.sid)+" | MAC address: "+WiFi.macAddress()+"<p><a href=https://github.com/gwelt/ESP32_epaper>https://github.com/gwelt/ESP32_epaper</a></div></div></div></body></html>";
 }
 
 void blink(int z, int d) {
@@ -295,40 +347,37 @@ void goToDeepSleep() {
 void epaper_init()
 {
 	display.fillScreen(GxEPD_WHITE);
-	display.setFont(f12);
+	display.setFont(f9);
 	display.setTextColor(GxEPD_BLACK);
 	display.setCursor(0,20);
 	display.update();
 }
 
-void epaper_message()
+void epaper_print(const String& text) {epaper_update(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, text, f9, false);}
+void epaper_print_headline(String text)
 {
 	display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
+	display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_WHITE);
+	display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 	display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_BLACK);
 	display.setFont(f24);
 	display.setTextColor(GxEPD_WHITE);
 	display.setCursor(30,60);
-	display.print("Hello World!");
+	display.print(text);
 	display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 }
+void epaper_print_content(const String& text) {epaper_update(0, 105, GxEPD_WIDTH, 120, text, f12, false);}
+void epaper_print_status1(const String& text) {epaper_update(0, GxEPD_HEIGHT-60, GxEPD_WIDTH, 30, text, f12, false);}
+void epaper_print_status2(const String& text) {epaper_update(0, GxEPD_HEIGHT-30, GxEPD_WIDTH, 30, text, f12, false);}
 
-void epaper_print(const String& text) {epaper_update(0, 105, GxEPD_WIDTH, 120, text, false);}
-void epaper_print_status1(const String& text) {epaper_update(0, GxEPD_HEIGHT-60, GxEPD_WIDTH, 30, text, false);}
-void epaper_print_status2(const String& text) {epaper_update(0, GxEPD_HEIGHT-30, GxEPD_WIDTH, 30, text, false);}
-
-void epaper_update(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const String& text, bool invert)
+void epaper_update(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const String& text, const GFXfont* font, bool invert)
 {
 	display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
-
 	display.fillRect(x, y, w, h, GxEPD_BLACK);
 	display.updateWindow(x, y, w, h, true);
-
-	display.fillRect(x, y, w, h, GxEPD_WHITE);
-	display.updateWindow(x, y, w, h, true);
-
 	display.fillRect(x, y, w, h, GxEPD_WHITE);
 	display.setCursor(x,y+22);
-	display.setFont(f12);
+	display.setFont(font);
 	display.setTextColor(GxEPD_BLACK);
 	display.println(text);
 	display.updateWindow(x, y, w, h, true);
