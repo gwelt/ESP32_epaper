@@ -365,7 +365,7 @@ void epaper_print_headline(String text)
 	display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_BLACK);
 	display.setFont(f24);
 	display.setTextColor(GxEPD_WHITE);
-	display.setCursor(30,60);
+	display.setCursor(0,60);
 	display.print(text);
 	display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 }
@@ -377,9 +377,9 @@ void epaper_update(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const String&
 {
 	display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
 	/*
-	display.fillRect(x, y, w, h, GxEPD_BLACK);
-	display.updateWindow(x, y, w, h, true);
 	*/
+	display.fillRect(x, y, w, h, GxEPD_BLACK);
+	display.updateWindow(x, y, w, h, false);
 	display.fillRect(x, y, w, h, GxEPD_WHITE);
 	display.setCursor(x,y+22);
 	display.setFont(font);
