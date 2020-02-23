@@ -361,7 +361,6 @@ void epaper_print_headline(String text)
 	display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_WHITE);
 	display.updateWindow(0, 0, GxEPD_WIDTH, 100, true);
 	*/
-
 	display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
 	display.fillRect(0, 0, GxEPD_WIDTH, 100, GxEPD_BLACK);
 	display.setFont(f24);
@@ -377,8 +376,10 @@ void epaper_print_status2(const String& text) {epaper_update(0, GxEPD_HEIGHT-30,
 void epaper_update(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const String& text, const GFXfont* font, bool invert)
 {
 	display.updateWindow(0, 0, GxEPD_WIDTH, GxEPD_HEIGHT, false);
+	/*
 	display.fillRect(x, y, w, h, GxEPD_BLACK);
 	display.updateWindow(x, y, w, h, true);
+	*/
 	display.fillRect(x, y, w, h, GxEPD_WHITE);
 	display.setCursor(x,y+22);
 	display.setFont(font);
